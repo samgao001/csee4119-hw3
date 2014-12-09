@@ -7,7 +7,7 @@ CC := g++
 CFLAGS := -g -Wall -pthread
 
 # soruce file defines
-SOURCES := client.c
+SOURCES := bfclient.c
 PROGRAMS := $(patsubst %.c, %, $(SOURCES))
 SUFFIX := .exe
 
