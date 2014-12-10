@@ -210,15 +210,11 @@ int main(int argc, char* argv[])
     
 			packet[0].dest_ip = 251789322;
 			packet[0].dest_port = 4118;
-			packet[0].hop_ip = 251789322;
-			packet[0].hop_port = 4118;
 			packet[0].cost_int = 1;
 			packet[0].cost_deci = 0;
 		
 			packet[1].dest_ip = 251789322;
 			packet[1].dest_port = 4116;
-			packet[1].hop_ip = 251789322;
-			packet[1].hop_port = 4116;
 			packet[1].cost_int = 3;
 			packet[1].cost_deci = 0;
 		
