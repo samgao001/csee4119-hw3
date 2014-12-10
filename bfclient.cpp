@@ -61,6 +61,10 @@ typedef struct bf_packet_t
 
 map<string, bfpath> neighbors;
 map<string, bfpath> routing_table;
+uint16_t localport;
+int timeout;
+string myip;
+string myaddr;
 
 /**************************************************************/
 /*	itos - helper function to convert integer to string
@@ -81,18 +85,12 @@ string get_own_ip(void);
 void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count);
 void print_routing_table(void);
 
+void* listening_handler(void*);
+void* broadcast_handler(void*);
+
 /******************* Main program ********************************/
 int main(int argc, char* argv[])
 {   
-
-	/*struct in_addr addr;
-    inet_aton(my_ip.c_str(), &addr);
-    cout << addr.s_addr << endl;
-    
-    struct in_addr test;
-    test.s_addr = 251789322;
-    cout << inet_ntoa(test) << endl;*/	
-	
 	// setup to capture process terminate signals
 	signal(SIGINT, quitHandler);
 	signal(SIGTERM, quitHandler);
@@ -106,10 +104,19 @@ int main(int argc, char* argv[])
     	error("Invalid number of argument.\n>Usage: ./bfclient <local port> <ip1> <port1> <weight1> ...");
     }
     
-    int localport = atoi(argv[1]);
-    int timeout = atoi(argv[2]);
-    string my_ip = get_own_ip();
-    cout << ">My ip address is: " << my_ip << endl;
+    localport = atoi(argv[1]);
+    timeout = atoi(argv[2]);
+    myip = get_own_ip();
+    myaddr = myip + ":" + itos(localport);
+    cout << ">My ip address is: " << myip << endl;
+    
+    /*struct in_addr addr;
+    inet_aton(my_ip.c_str(), &addr);
+    cout << addr.s_addr << endl;
+    
+    struct in_addr test;
+    test.s_addr = 251789322;
+    cout << inet_ntoa(test) << endl;*/	
     
     if(localport < 0 || timeout < 0)
     {
@@ -144,6 +151,7 @@ int main(int argc, char* argv[])
     string cmd;
     string ip;
     uint16_t port;
+    string key;
     
     while(up)
     {
@@ -175,11 +183,18 @@ int main(int argc, char* argv[])
     	}
     	else if(cmd.compare("LINKDOWN") == 0)
     	{
-    		cout << ip << ":" << port << endl;
+    		key = ip + ":" + itos(port);
+    		
+    		neighbors[key].linked = false;
+    		routing_table[key].linked = false;
     	}
     	else if(cmd.compare("LINKUP") == 0)
     	{
-    		cout << ip << ":" << port << endl;
+    		key = ip + ":" + itos(port);
+    		
+    		neighbors[key].linked = true;
+    		routing_table[key].linked = true;
+    		routing_table[key].cost = routing_table[key].origin_cost;
     	}
     	else if(cmd.compare("HELP") == 0)
     	{
@@ -195,11 +210,15 @@ int main(int argc, char* argv[])
     
 			packet[0].dest_ip = 251789322;
 			packet[0].dest_port = 4118;
+			packet[0].hop_ip = 251789322;
+			packet[0].hop_port = 4118;
 			packet[0].cost_int = 1;
 			packet[0].cost_deci = 0;
 		
 			packet[1].dest_ip = 251789322;
-			packet[1].dest_port = 4119;
+			packet[1].dest_port = 4116;
+			packet[1].hop_ip = 251789322;
+			packet[1].hop_port = 4116;
 			packet[1].cost_int = 3;
 			packet[1].cost_deci = 0;
 		
@@ -254,7 +273,7 @@ void error(string str)
 void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count) 
 {
 	struct in_addr temp;
-	double s_cost =  routing_table[s_ip + ":" + itos(s_port)].cost;
+	double s_cost;
 	
 	string ip;
 	uint16_t port;
@@ -270,8 +289,10 @@ void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count)
 		
 		string key = ip + ":" + itos(port);
 		
+		
 		if(routing_table.count(key) > 0)
 		{
+			s_cost =  routing_table[s_ip + ":" + itos(s_port)].cost;
 			if(routing_table[key].cost > s_cost + cost)
 			{
 				routing_table[key].cost = s_cost + cost;
@@ -280,10 +301,27 @@ void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count)
 				routing_table[key].linked = true;
 			}
 		}
+		else if(myaddr.compare(key) == 0)
+		{
+			cout << "here" << endl;
+			bfpath new_node;
+						
+			new_node.dest_port = s_port;
+			new_node.dest = s_ip;
+			new_node.hop_port = s_port;
+			new_node.hop = s_ip;
+			new_node.cost = cost;
+			new_node.origin_cost = cost;
+			new_node.linked = true;
+			
+			routing_table[s_ip + ":" + itos(s_port)] = new_node;
+			neighbors[s_ip + ":" + itos(s_port)] = new_node;
+		}
 		else
 		{
 			bfpath new_node;
-						
+			s_cost =  routing_table[s_ip + ":" + itos(s_port)].cost;
+			
 			new_node.dest_port = port;
 			new_node.dest = ip;
 			new_node.hop_port = s_port;
