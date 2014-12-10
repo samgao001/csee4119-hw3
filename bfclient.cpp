@@ -38,6 +38,7 @@ using namespace std;
 /******************* User Defines ********************************/
 #define MS_PER_SECOND							1000
 #define INF										UINT_MAX
+#define COST_DIVIDER							50000
 
 typedef struct bfpath_t
 {
@@ -54,24 +55,44 @@ typedef struct bf_packet_t
 {
 	uint32_t dest_ip;
 	uint16_t dest_port;
-	uint32_t hop_ip;
-	uint16_t hop_port;
 	uint16_t cost_int;
 	uint16_t cost_deci;
 }bf_packet;
 
+map<string, bfpath> neighbors;
 map<string, bfpath> routing_table;
+
+/**************************************************************/
+/*	itos - helper function to convert integer to string
+/**************************************************************/
+template <typename T>
+string itos(T Number)
+{
+	stringstream ss;
+	ss << Number;
+	return ss.str();
+}
 
 /******************* Function Prototype **************************/
 void error(string str);
 void quitHandler(int exit_code);
 string get_time_stamp(void);
 string get_own_ip(void);
+void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count);
 void print_routing_table(void);
 
 /******************* Main program ********************************/
 int main(int argc, char* argv[])
 {   
+
+	/*struct in_addr addr;
+    inet_aton(my_ip.c_str(), &addr);
+    cout << addr.s_addr << endl;
+    
+    struct in_addr test;
+    test.s_addr = 251789322;
+    cout << inet_ntoa(test) << endl;*/	
+	
 	// setup to capture process terminate signals
 	signal(SIGINT, quitHandler);
 	signal(SIGTERM, quitHandler);
@@ -85,8 +106,8 @@ int main(int argc, char* argv[])
     	error("Invalid number of argument.\n>Usage: ./bfclient <local port> <ip1> <port1> <weight1> ...");
     }
     
-    int localport = atoi(argv[0]);
-    int timeout = atoi(argv[1]);
+    int localport = atoi(argv[1]);
+    int timeout = atoi(argv[2]);
     string my_ip = get_own_ip();
     cout << ">My ip address is: " << my_ip << endl;
     
@@ -110,13 +131,100 @@ int main(int argc, char* argv[])
     	new_node.hop = new_node.dest;
     	new_node.cost = atof(argv[i+2]);
     	new_node.origin_cost = new_node.cost;
-    	new_node.linked = false;
+    	new_node.linked = true;
     	
+    	neighbors[(ip + ":" + port)] = new_node;
     	routing_table[(ip + ":" + port)] = new_node;
     	i+=3;
     }
     
-    print_routing_table();
+    bool up = true;
+    
+    string input;
+    string cmd;
+    string ip;
+    uint16_t port;
+    
+    while(up)
+    {
+    	cout << ">";
+    	getline(cin, input);
+    	
+    	cmd = input.substr(0,input.find_first_of(" "));
+    	if(input.find_first_of(" ") != string::npos)
+    	{
+    		input = input.substr(input.find_first_of(" ") + 1);
+    		ip = input.substr(0,input.find_first_of(" "));
+    		input = input.substr(input.find_first_of(" ") + 1);
+    		port = atoi(input.substr(0,input.find_first_of(" ")).c_str());
+    		
+    		struct in_addr addr;
+    		if(inet_aton(ip.c_str(), &addr) == 0 || port <= 0)
+    		{
+    			cmd = "ERROR";
+    		}
+    	}
+    	
+    	if(cmd.compare("CLOSE") == 0)
+    	{
+    		up = false;
+    	}
+    	else if(cmd.compare("SHOWRT") == 0)
+    	{
+    		print_routing_table();
+    	}
+    	else if(cmd.compare("LINKDOWN") == 0)
+    	{
+    		cout << ip << ":" << port << endl;
+    	}
+    	else if(cmd.compare("LINKUP") == 0)
+    	{
+    		cout << ip << ":" << port << endl;
+    	}
+    	else if(cmd.compare("HELP") == 0)
+    	{
+    		cout << endl << "SUPPORTED COMMAND LIST:" << endl;
+    		cout << "SHOWRT               : Show current routing table." << endl;
+    		cout << "LINKDOWN <ip> <port> : Destroy a link to a neighbor." << endl;
+    		cout << "LINKUP   <ip> <port> : Restore the link destroyed by LINKDOWN." << endl;
+    		cout << "CLOSE                : Close the client, acts as LINKDOWN all." << endl << endl;
+    	}
+    	else if(cmd.compare("TEST") == 0)
+    	{
+    		bf_packet packet[2];
+    
+			packet[0].dest_ip = 251789322;
+			packet[0].dest_port = 4118;
+			packet[0].cost_int = 1;
+			packet[0].cost_deci = 0;
+		
+			packet[1].dest_ip = 251789322;
+			packet[1].dest_port = 4119;
+			packet[1].cost_int = 3;
+			packet[1].cost_deci = 0;
+		
+			BF(packet, "10.0.2.15", 4117, 2);
+		
+			print_routing_table();
+    	}
+    	else if(cmd.compare("ERROR") == 0)
+    	{
+    		struct in_addr addr;
+    		if(inet_aton(ip.c_str(), &addr) == 0)
+    		{
+    			cout << ">Invalid ip address." << endl;
+    		}
+    		
+    		if(port <= 0)
+    		{
+    			cout << ">Invalid port number." << endl;
+    		}
+    	}
+    	else
+    	{
+    		cout << ">Command not supported, enter HELP for list of supported command and usage." << endl;
+    	}
+    }
 
 	exit(EXIT_SUCCESS);
 }
@@ -143,31 +251,50 @@ void error(string str)
 /**************************************************************/
 /*	BF - bellman ford
 /**************************************************************/
-void BF(string source) 
+void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count) 
 {
-	int i, j;
-
-	for (i = 0; i < n; ++i)
-		d[i] = INFINITY;
-
-	d[s] = 0;
+	struct in_addr temp;
+	double s_cost =  routing_table[s_ip + ":" + itos(s_port)].cost;
 	
-	for(map<string, bfpath>::iterator itr=routing_table.begin(); itr!=routing_table.end(); ++itr)
+	string ip;
+	uint16_t port;
+	double cost;
+	
+	for(int i = 0; i < count; i++)
 	{
-		string key = ((*itr).first);
-		bfpath val = routing_table[key];
+		temp.s_addr = route_info[i].dest_ip;
 		
+		ip = inet_ntoa(temp);
+		port = route_info[i].dest_port;
+		cost = route_info[i].cost_int + (double)route_info[i].cost_deci / COST_DIVIDER; 
 		
-	}
-
-	for (i = 0; i < routing_table.size() - 1; ++i)
-	{
-		for (j = 0; j < e; ++j)
+		string key = ip + ":" + itos(port);
+		
+		if(routing_table.count(key) > 0)
 		{
-			if (d[edges[j].u] + edges[j].w < d[edges[j].v])
-				d[edges[j].v] = d[edges[j].u] + edges[j].w;
+			if(routing_table[key].cost > s_cost + cost)
+			{
+				routing_table[key].cost = s_cost + cost;
+				routing_table[key].hop_port = s_port;
+				routing_table[key].hop = s_ip;
+				routing_table[key].linked = true;
+			}
 		}
-	}
+		else
+		{
+			bfpath new_node;
+						
+			new_node.dest_port = port;
+			new_node.dest = ip;
+			new_node.hop_port = s_port;
+			new_node.hop = s_ip;
+			new_node.cost = s_cost + cost;
+			new_node.origin_cost = s_cost + cost;
+			new_node.linked = true;
+			
+			routing_table[key] = new_node;
+		}
+	}	
 }
 
 /**************************************************************/
@@ -225,7 +352,7 @@ void print_routing_table(void)
 		
 		if(val.linked)
 		{
-			cout << "Destination = " << key.c_str() << ", ";
+			cout << "Destination = " << key << ", ";
 			cout << "Cost = " << val.cost << ", ";
 			cout << "Link = (" << val.hop << ":" << val.hop_port << ")" << endl;
 		}
