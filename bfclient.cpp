@@ -36,9 +36,9 @@
 using namespace std;
 
 /******************* User Defines ********************************/
-#define MS_PER_SECOND							1000
-#define INF										UINT_MAX
+#define INF										0xFFFF
 #define COST_DIVIDER							50000
+#define MAX_BUFF_SIZE							1024
 
 typedef struct bfpath_t
 {
@@ -49,6 +49,7 @@ typedef struct bfpath_t
 	double origin_cost;
 	double cost;
 	bool linked;
+	int timeout_count;
 }bfpath;
 
 typedef struct bf_packet_t
@@ -60,9 +61,8 @@ typedef struct bf_packet_t
 }bf_packet;
 
 map<string, bfpath> neighbors;
-map<string, bfpath> routing_table;
-uint16_t localport;
-int timeout;
+map<string, bfpath> RT;
+struct timeval timeout;
 string myip;
 string myaddr;
 
@@ -83,7 +83,7 @@ void quitHandler(int exit_code);
 string get_time_stamp(void);
 string get_own_ip(void);
 void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count);
-void print_routing_table(void);
+void print_RT(void);
 
 void* listening_handler(void*);
 void* broadcast_handler(void*);
@@ -104,8 +104,11 @@ int main(int argc, char* argv[])
     	error("Invalid number of argument.\n>Usage: ./bfclient <local port> <ip1> <port1> <weight1> ...");
     }
     
+    uint16_t localport;
+    
     localport = atoi(argv[1]);
-    timeout = atoi(argv[2]);
+    timeout.tv_sec = atoi(argv[2]);
+    timeout.tv_usec = 0;
     myip = get_own_ip();
     myaddr = myip + ":" + itos(localport);
     cout << ">My ip address is: " << myip << endl;
@@ -118,7 +121,7 @@ int main(int argc, char* argv[])
     test.s_addr = 251789322;
     cout << inet_ntoa(test) << endl;*/	
     
-    if(localport < 0 || timeout < 0)
+    if(localport < 0 || timeout.tv_sec < 0)
     {
     	error("Invalid argument. Argument must be greater than 0.");
     }
@@ -139,9 +142,10 @@ int main(int argc, char* argv[])
     	new_node.cost = atof(argv[i+2]);
     	new_node.origin_cost = new_node.cost;
     	new_node.linked = true;
+    	new_node.timeout_count = 0;
     	
     	neighbors[(ip + ":" + port)] = new_node;
-    	routing_table[(ip + ":" + port)] = new_node;
+    	RT[(ip + ":" + port)] = new_node;
     	i+=3;
     }
     
@@ -152,6 +156,12 @@ int main(int argc, char* argv[])
     string ip;
     uint16_t port;
     string key;
+    
+    pthread_t listen_tr;
+    if(pthread_create(&listen_tr, NULL, listening_handler, &localport) < 0)
+    {
+        error("Could not create thread.");
+    }
     
     while(up)
     {
@@ -179,22 +189,22 @@ int main(int argc, char* argv[])
     	}
     	else if(cmd.compare("SHOWRT") == 0)
     	{
-    		print_routing_table();
+    		print_RT();
     	}
     	else if(cmd.compare("LINKDOWN") == 0)
     	{
     		key = ip + ":" + itos(port);
     		
     		neighbors[key].linked = false;
-    		routing_table[key].linked = false;
+    		RT[key].linked = false;
     	}
     	else if(cmd.compare("LINKUP") == 0)
     	{
     		key = ip + ":" + itos(port);
     		
     		neighbors[key].linked = true;
-    		routing_table[key].linked = true;
-    		routing_table[key].cost = routing_table[key].origin_cost;
+    		RT[key].linked = true;
+    		RT[key].cost = RT[key].origin_cost;
     	}
     	else if(cmd.compare("HELP") == 0)
     	{
@@ -220,7 +230,7 @@ int main(int argc, char* argv[])
 		
 			BF(packet, "10.0.2.15", 4117, 2);
 		
-			print_routing_table();
+			print_RT();
     	}
     	else if(cmd.compare("ERROR") == 0)
     	{
@@ -242,6 +252,86 @@ int main(int argc, char* argv[])
     }
 
 	exit(EXIT_SUCCESS);
+}
+
+void* listening_handler(void* localport)
+{
+	int listen;
+	struct sockaddr_in incoming;
+	uint16_t port = *(uint16_t*)localport;
+	int len = sizeof(struct sockaddr_in);
+	
+	// setup listening socket
+    memset(&incoming, 0, sizeof(incoming));
+	incoming.sin_addr.s_addr = INADDR_ANY;
+    incoming.sin_family = AF_INET;
+    incoming.sin_port = htons(port);
+    
+    if((listen = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+	{
+		shutdown(listen, SHUT_RDWR);
+		error(">Failed to open UDP socket.");
+	}
+	
+	int iSetOption = 1;
+	setsockopt(listen, SOL_SOCKET, SO_REUSEADDR, (char*)&iSetOption, sizeof(iSetOption));
+	
+	// attempt to bind the socket
+	if (bind(listen, (struct sockaddr *)&incoming, sizeof(incoming)) < 0) 
+	{
+		shutdown(listen, SHUT_RDWR);
+		error("Failed to bind UDP socket.");
+	}
+	
+	if (setsockopt(listen, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) 
+	{
+		shutdown(listen, SHUT_RDWR);
+		error("Faile to set timeout");
+	}
+	
+	int timeout_count = 0;
+	uint8_t buff[MAX_BUFF_SIZE];
+	
+	while(1)
+	{
+		int n = recvfrom(listen, buff, MAX_BUFF_SIZE, 0, (struct sockaddr*)&incoming, (socklen_t*)&len);
+		
+		if(n < 0)
+		{
+			for(map<string, bfpath>::iterator itr=neighbors.begin(); itr!=neighbors.end(); ++itr)
+			{
+				string key = ((*itr).first);
+				neighbors[key].timeout_count++;
+				
+				if(neighbors[key].timeout_count > 3)
+				{
+					neighbors[key].linked = false;
+					
+					for(map<string, bfpath>::iterator i=RT.begin(); i!=RT.end(); ++i)
+					{			
+						if(RT[((*i).first)].hop.compare(neighbors[key].dest) == 0)
+						{
+							RT[((*i).first)].linked = false;
+							RT[((*i).first)].cost = INF;
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			uint8_t packet_count = buff[0];
+			uint16_t s_port = buff[2] << 8 | buff[1];
+			string s_ip = inet_ntoa(incoming.sin_addr);
+			bf_packet pkt[packet_count];
+			
+			memcpy(&pkt, &buff + 3, sizeof(bf_packet) * packet_count);
+			BF(pkt, s_ip, s_port, packet_count);
+			
+			neighbors[s_ip + ":" + itos(s_port)].timeout_count = 0;
+			neighbors[s_ip + ":" + itos(s_port)].linked = true;
+		}
+	}
 }
 
 /**************************************************************/
@@ -286,15 +376,20 @@ void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count)
 		string key = ip + ":" + itos(port);
 		
 		
-		if(routing_table.count(key) > 0)
+		if(RT.count(key) > 0)
 		{
-			s_cost =  routing_table[s_ip + ":" + itos(s_port)].cost;
-			if(routing_table[key].cost > s_cost + cost)
+			s_cost =  RT[s_ip + ":" + itos(s_port)].cost;
+			if(cost == INF)
 			{
-				routing_table[key].cost = s_cost + cost;
-				routing_table[key].hop_port = s_port;
-				routing_table[key].hop = s_ip;
-				routing_table[key].linked = true;
+				RT[key].cost = INF;
+				RT[key].linked = false;
+			}
+			else if(RT[key].cost > s_cost + cost)
+			{
+				RT[key].cost = s_cost + cost;
+				RT[key].hop_port = s_port;
+				RT[key].hop = s_ip;
+				RT[key].linked = true;
 			}
 		}
 		else if(myaddr.compare(key) == 0)
@@ -310,13 +405,13 @@ void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count)
 			new_node.origin_cost = cost;
 			new_node.linked = true;
 			
-			routing_table[s_ip + ":" + itos(s_port)] = new_node;
+			RT[s_ip + ":" + itos(s_port)] = new_node;
 			neighbors[s_ip + ":" + itos(s_port)] = new_node;
 		}
 		else
 		{
 			bfpath new_node;
-			s_cost =  routing_table[s_ip + ":" + itos(s_port)].cost;
+			s_cost =  RT[s_ip + ":" + itos(s_port)].cost;
 			
 			new_node.dest_port = port;
 			new_node.dest = ip;
@@ -326,7 +421,7 @@ void BF(bf_packet* route_info, string s_ip, uint16_t s_port, uint8_t count)
 			new_node.origin_cost = s_cost + cost;
 			new_node.linked = true;
 			
-			routing_table[key] = new_node;
+			RT[key] = new_node;
 		}
 	}	
 }
@@ -373,16 +468,16 @@ string get_time_stamp(void)
 }
 
 /**************************************************************/
-/*	print_routing_table - print out the current routing table
+/*	print_RT - print out the current routing table
 /**************************************************************/
-void print_routing_table(void)
+void print_RT(void)
 {
 	cout << endl << get_time_stamp() << " Distance vector list is:" << endl;
 	
-	for(map<string, bfpath>::iterator itr=routing_table.begin(); itr!=routing_table.end(); ++itr)
+	for(map<string, bfpath>::iterator itr=RT.begin(); itr!=RT.end(); ++itr)
 	{
 		string key = ((*itr).first);
-		bfpath val = routing_table[key];
+		bfpath val = RT[key];
 		
 		if(val.linked)
 		{
